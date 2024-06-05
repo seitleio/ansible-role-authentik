@@ -1,0 +1,138 @@
+# tasks file for roles/container/authentik
+---
+- name: Create a service network
+  community.docker.docker_network:
+    name: "{{ service_name }}_network"
+    driver: bridge
+    driver_options:
+      com.docker.network.bridge.name: "br-{{ service_name }}"
+
+- name: Create a authentication network
+  community.docker.docker_network:
+    name: "auth_backend_network"
+    driver: bridge
+    driver_options:
+      com.docker.network.bridge.name: "br-auth-backend"
+
+- name: Make sure the authentik-postgresql container is created and running
+  community.docker.docker_container:
+    name: "{{ service_name }}-postgresql"
+    image: "docker.io/library/postgres:12-alpine"
+    recreate: "{{ allow_recreate_containers | default('false') }}"
+    keep_volumes: true
+    restart_policy: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d $${POSTGRES_DB} -U $${POSTGRES_USER}"]
+      start_period: 20s
+      interval: 30s
+      retries: 5
+      timeout: 5s
+    networks:
+      - name: "{{ service_name }}_network"
+    env:
+      PGDATA: /var/lib/postgresql/data/pgdata
+      POSTGRES_USER: "{{ authentik_postgres_user }}"
+      POSTGRES_PASSWORD: "{{ authentik_postgres_password }}"
+      POSTGRES_DB: "{{ authentik_postgres_database }}"
+    volumes:
+      - "{{ service_data_path }}/database:/var/lib/postgresql/data"
+
+- name: Make sure the authentik-redis container is created and running
+  community.docker.docker_container:
+    name: "{{ service_name }}-redis"
+    image: "docker.io/library/redis:alpine"
+    command: "--save 60 1 --loglevel warning"
+    recreate: "{{ allow_recreate_containers | default('false') }}"
+    keep_volumes: true
+    restart_policy: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep PONG"]
+      start_period: 20s
+      interval: 30s
+      retries: 5
+      timeout: 3s
+    networks:
+      - name: "{{ service_name }}_network"
+    volumes:
+      - "{{ service_data_path }}/redis:/data"
+
+- name: Make sure the authentik-server container is created and running
+  community.docker.docker_container:
+    name: "{{ service_name }}-server"
+    image: "ghcr.io/goauthentik/server:latest"
+    command: "server"
+    recreate: "{{ allow_recreate_containers | default('false') }}"
+    keep_volumes: true
+    restart_policy: unless-stopped
+    networks:
+      - name: "{{ service_name }}_network"
+      - name: "auth_backend_network"
+    env:
+      AUTHENTIK_REDIS__HOST: "{{ service_name }}-redis"
+      AUTHENTIK_POSTGRESQL__HOST: "{{ service_name }}-postgresql"
+      AUTHENTIK_POSTGRESQL__USER: "{{ authentik_postgres_user }}"
+      AUTHENTIK_POSTGRESQL__NAME: "{{ authentik_postgres_database }}"
+      AUTHENTIK_POSTGRESQL__PASSWORD: "{{ authentik_postgres_password }}"
+      AUTHENTIK_SECRET_KEY: "{{ authentik_secret_key }}"
+      VIRTUAL_HOST: "{{ authentik_domain }}"
+      LETSENCRYPT_HOST: "{{ authentik_domain }}"
+      VIRTUAL_PORT: "9443"
+      VIRTUAL_PROTO: "https"
+    volumes:
+      - "{{ service_data_path }}/media:/media"
+      - "{{ service_data_path }}/custom-templates:/templates"
+
+- name: Make sure the authentik-worker container is created and running
+  community.docker.docker_container:
+    name: "{{ service_name }}-worker"
+    image: "ghcr.io/goauthentik/server:latest"
+    command: "worker"
+    recreate: "{{ allow_recreate_containers | default('false') }}"
+    keep_volumes: true
+    restart_policy: unless-stopped
+    networks:
+      - name: "{{ service_name }}_network"
+    user: root
+    env:
+      AUTHENTIK_REDIS__HOST: "{{ service_name }}-redis"
+      AUTHENTIK_POSTGRESQL__HOST: "{{ service_name }}-postgresql"
+      AUTHENTIK_POSTGRESQL__USER: "{{ authentik_postgres_user }}"
+      AUTHENTIK_POSTGRESQL__NAME: "{{ authentik_postgres_database }}"
+      AUTHENTIK_POSTGRESQL__PASSWORD: "{{ authentik_postgres_password }}"
+      AUTHENTIK_SECRET_KEY: "{{ authentik_secret_key }}"
+    volumes:
+      - "{{ service_data_path }}/media:/media"
+      - "{{ service_data_path }}/custom-templates:/templates"
+      - "{{ service_data_path }}/certs:/certs"
+
+- name: Make sure the authentik-outpost-ldap container is created and running
+  community.docker.docker_container:
+    state: "{{ 'started' if enable_authentik_outpost_ldap else 'absent' }}"
+    name: "{{ service_name }}-outpost-ldap"
+    image: "ghcr.io/goauthentik/ldap:latest"
+    recreate: "{{ allow_recreate_containers | default('false') }}"
+    restart_policy: unless-stopped
+    networks:
+      - name: "{{ service_name }}_network"
+      - name: auth_backend_network
+    env:
+      AUTHENTIK_HOST: "https://{{ authentik_domain }}"
+      AUTHENTIK_INSECURE: "false"
+      AUTHENTIK_TOKEN: "{{ authentik_outpost_ldap_token }}"
+
+- name: Make sure the authentik-outpost-proxy container is created and running
+  community.docker.docker_container:
+    state: "{{ 'started' if enable_authentik_outpost_proxy else 'absent' }}"
+    name: "{{ service_name }}-outpost-proxy"
+    image: "ghcr.io/goauthentik/proxy:latest"
+    recreate: "{{ allow_recreate_containers | default('false') }}"
+    restart_policy: unless-stopped
+    networks:
+      - name: "{{ service_name }}_network"
+      - name: auth_backend_network
+    ports:
+      - "9443:9443"
+    env:
+      AUTHENTIK_HOST: "https://{{ authentik_domain }}"
+      AUTHENTIK_INSECURE: "false"
+      AUTHENTIK_TOKEN: "{{ authentik_outpost_proxy_token }}"

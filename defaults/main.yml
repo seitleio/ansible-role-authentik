@@ -1,0 +1,15 @@
+service_name: "authentik"
+service_data_path: "/data/services/{{ service_name }}"
+
+authentik_domain: "auth.example.com"
+
+authentik_postgres_user: "postgres"
+authentik_postgres_password: ""
+authentik_postgres_database: "postgres"
+
+authentik_secret_key: ""
+
+enable_authentik_outpost_ldap: false
+authentik_outpost_ldap_token: ""
+enable_authentik_outpost_proxy: false
+authentik_outpost_proxy_token: ""
